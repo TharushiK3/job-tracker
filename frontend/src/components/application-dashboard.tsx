@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import MarkAppliedForm from "@/components/mark-applied-form";
 import SaveRoleForm from "@/components/save-role-form";
+
 type ApplicationStatus =
   | "Saved"
   | "Applied"
@@ -74,6 +76,26 @@ export default function ApplicationDashboard() {
 
     setApplications((current) => [newApplication, ...current]);
   }
+
+  function markAsApplied(applicationId: string, appliedOn: string) {
+    setApplications((current) =>
+      current.map((application): JobApplication => {
+        if (
+          application.id !== applicationId ||
+          application.status !== "Saved"
+        ) {
+          return application;
+        }
+
+        return {
+          ...application,
+          status: "Applied",
+          appliedOn,
+        };
+      }),
+    );
+  }
+
   const submittedCount = applications.filter(
     (application) => application.appliedOn !== null,
   ).length;
@@ -123,6 +145,7 @@ export default function ApplicationDashboard() {
             View applications
           </a>
         </section>
+
         <SaveRoleForm onSave={saveRole} />
 
         <section aria-labelledby="overview-heading">
@@ -132,11 +155,14 @@ export default function ApplicationDashboard() {
 
           <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryCard label="Tracked roles" value={applications.length} />
+
             <SummaryCard
               label="Applications submitted"
               value={submittedCount}
             />
+
             <SummaryCard label="At interview stage" value={interviewCount} />
+
             <SummaryCard label="Offers" value={offerCount} />
           </dl>
         </section>
@@ -157,9 +183,9 @@ export default function ApplicationDashboard() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[600px] text-left text-sm">
+            <table className="w-full min-w-[820px] text-left text-sm">
               <caption className="sr-only">
-                Example job applications. Dates use year-month-day.
+                Tracked job opportunities. Application dates use year-month-day.
               </caption>
 
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
@@ -167,11 +193,17 @@ export default function ApplicationDashboard() {
                   <th scope="col" className="px-6 py-3 font-medium">
                     Role and company
                   </th>
+
                   <th scope="col" className="px-6 py-3 font-medium">
                     Status
                   </th>
+
                   <th scope="col" className="px-6 py-3 font-medium">
                     Application date
+                  </th>
+
+                  <th scope="col" className="px-6 py-3 font-medium">
+                    Action
                   </th>
                 </tr>
               </thead>
@@ -187,6 +219,7 @@ export default function ApplicationDashboard() {
                       className="px-6 py-5 font-medium text-slate-950"
                     >
                       {application.jobTitle}
+
                       <span className="mt-1 block font-normal text-slate-600">
                         {application.company}
                       </span>
@@ -206,6 +239,18 @@ export default function ApplicationDashboard() {
                       ) : (
                         "Not applied"
                       )}
+                    </td>
+
+                    <td className="px-6 py-5 align-top">
+                      <MarkAppliedForm
+                        applicationId={application.id}
+                        company={application.company}
+                        jobTitle={application.jobTitle}
+                        canApply={application.status === "Saved"}
+                        onApply={(appliedOn) => {
+                          markAsApplied(application.id, appliedOn);
+                        }}
+                      />
                     </td>
                   </tr>
                 ))}

@@ -1,0 +1,13 @@
+BEGIN;
+
+CREATE ROLE job_tracker_app
+    LOGIN
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOREPLICATION
+    NOBYPASSRLS;
+
+GRANT CONNECT ON DATABASE job_tracker TO job_tracker_app;
+
+COMMIT;

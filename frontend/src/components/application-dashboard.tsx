@@ -1,5 +1,5 @@
 "use client";
-
+import { UserButton } from "@clerk/nextjs";
 import { useState } from "react";
 import MarkAppliedForm from "@/components/mark-applied-form";
 import SaveRoleForm from "@/components/save-role-form";
@@ -116,9 +116,13 @@ export default function ApplicationDashboard() {
             Job Application Tracker
           </p>
 
-          <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800">
-            Interface preview
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800">
+              Interface preview
+            </span>
+
+            <UserButton />
+          </div>
         </div>
       </header>
 

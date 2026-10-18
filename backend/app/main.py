@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.auth import AuthenticatedIdentity, require_identity
 from app.config import get_settings
 from app.database import engine
-
+from app.applications import router as applications_router
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().clerk_authorized_parties,
     allow_credentials=False,
-    allow_methods=["GET"],
-    allow_headers=["Authorization"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+app.include_router(applications_router)
 
 
 @app.get("/health", tags=["Health"])

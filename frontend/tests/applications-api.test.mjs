@@ -10,6 +10,7 @@ import {
   recordApplicationDate,
   restoreApplication,
   updateApplication,
+  updateApplicationStage,
 } from "../src/lib/applications-api.ts";
 
 const originalFetch = globalThis.fetch;
@@ -587,5 +588,170 @@ test("archive listing and restore reject absent tokens before HTTP", async () =>
       (error) => error instanceof ApiError && error.status === 401,
     );
   }
+  assert.equal(calls, 0);
+});
+
+test("stage updates send the previous stage and map the saved result", async () => {
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, `http://127.0.0.1:8000/api/applications/${id}/stage`);
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.cache, "no-store");
+    assert.deepEqual(JSON.parse(options.body), {
+      expected_status: "applied",
+      status: "interview",
+    });
+    return Response.json(
+      role({ status: "interview", applied_on: "2026-01-15" }),
+    );
+  };
+  const result = await updateApplicationStage("test-token", id, {
+    expectedStatus: "applied",
+    status: "interview",
+  });
+  assert.equal(result.status, "interview");
+  assert.equal(result.appliedOn, "2026-01-15");
+});
+
+test("stage encoding excludes ownership, labels, dates, and archive fields", async () => {
+  globalThis.fetch = async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), {
+      expected_status: "interview",
+      status: "offer",
+    });
+    return Response.json(role({ status: "offer", applied_on: "2026-01-15" }));
+  };
+  await updateApplicationStage("test-token", id, {
+    expectedStatus: "interview",
+    status: "offer",
+    user_id: "not-the-owner",
+    company: "Changed Company",
+    applied_on: "2026-01-01",
+    archived_at: null,
+  });
+});
+
+test("invalid stage commands fail before making an HTTP request", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json(role());
+  };
+  for (const changes of [
+    { expectedStatus: "applied", status: "saved" },
+    { expectedStatus: "applied", status: "Interview" },
+    { expectedStatus: "applied", status: null },
+    { expectedStatus: "saved", status: "interview" },
+    { expectedStatus: "unknown", status: "interview" },
+    { status: "interview" },
+  ]) {
+    await assert.rejects(
+      updateApplicationStage("test-token", id, changes),
+      (error) =>
+        error instanceof ApiError &&
+        !error.mayHaveSaved &&
+        /valid stage/i.test(error.message),
+    );
+  }
+  assert.equal(calls, 0);
+});
+
+test("stage confirmations must match the requested role and target stage", async () => {
+  for (const invalid of [
+    {},
+    role({
+      id: "ef189a9e-2d96-41bc-86e8-1934f2a2a733",
+      status: "interview",
+      applied_on: "2026-01-15",
+    }),
+    role({ status: "applied", applied_on: "2026-01-15" }),
+    role({ status: "interview", applied_on: null }),
+    role({ status: "interview", applied_on: "2026-02-30" }),
+  ]) {
+    globalThis.fetch = async () => Response.json(invalid);
+    await assert.rejects(
+      updateApplicationStage("test-token", id, {
+        expectedStatus: "applied",
+        status: "interview",
+      }),
+      (error) =>
+        error instanceof ApiError &&
+        error.mayHaveSaved &&
+        /refresh/i.test(error.message),
+    );
+  }
+});
+
+test("a stage conflict asks for refresh without automatic retries", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json(
+      { detail: "This role's stage has changed. Refresh the list." },
+      { status: 409 },
+    );
+  };
+  await assert.rejects(
+    updateApplicationStage("test-token", id, {
+      expectedStatus: "applied",
+      status: "interview",
+    }),
+    (error) =>
+      error instanceof ApiError &&
+      error.status === 409 &&
+      !error.mayHaveSaved &&
+      /refresh/i.test(error.message),
+  );
+  assert.equal(calls, 1);
+});
+
+test("stage updates distinguish missing roles from uncertain service failures", async () => {
+  for (const status of [404, 503]) {
+    globalThis.fetch = async () =>
+      Response.json({ detail: "Request failed" }, { status });
+    await assert.rejects(
+      updateApplicationStage("test-token", id, {
+        expectedStatus: "applied",
+        status: "interview",
+      }),
+      (error) =>
+        error instanceof ApiError &&
+        error.status === status &&
+        error.mayHaveSaved === (status === 503) &&
+        /refresh/i.test(error.message),
+    );
+  }
+});
+
+test("a lost stage-update response is an uncertain write without automatic retries", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new TypeError("Connection lost");
+  };
+  await assert.rejects(
+    updateApplicationStage("test-token", id, {
+      expectedStatus: "applied",
+      status: "interview",
+    }),
+    (error) => error instanceof ApiError && error.mayHaveSaved,
+  );
+  assert.equal(calls, 1);
+});
+
+test("stage updates reject missing bearer credentials before HTTP", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json(role());
+  };
+  await assert.rejects(
+    updateApplicationStage("", id, {
+      expectedStatus: "applied",
+      status: "interview",
+    }),
+    (error) => error instanceof ApiError && error.status === 401,
+  );
   assert.equal(calls, 0);
 });

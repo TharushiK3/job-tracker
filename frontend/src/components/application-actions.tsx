@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 import MarkAppliedForm from "@/components/mark-applied-form";
+import UpdateStageForm from "@/components/update-stage-form";
 import {
   type ApplicationEdits,
+  type ApplicationStageChange,
   errorMessage,
   type JobApplication,
 } from "@/lib/applications-api";
@@ -12,10 +14,11 @@ type ApplicationActionsProps = {
   onEdit: (changes: ApplicationEdits) => Promise<void>;
   onArchive: () => Promise<void>;
   onApply: (appliedOn: string) => Promise<void>;
+  onStageChange: (changes: ApplicationStageChange) => Promise<void>;
 };
 
 type Panel = {
-  kind: "edit" | "archive";
+  kind: "edit" | "archive" | "stage";
   original: JobApplication;
 };
 
@@ -28,28 +31,33 @@ export default function ApplicationActions({
   onEdit,
   onArchive,
   onApply,
+  onStageChange,
 }: ApplicationActionsProps) {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [notice, setNotice] = useState("");
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const archiveButtonRef = useRef<HTMLButtonElement>(null);
-  const restoreFocus = useRef<"edit" | "archive" | null>(null);
+  const stageButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef<Panel["kind"] | null>(null);
   const prefix = useId();
   const editPanelId = `${prefix}-edit`;
   const archivePanelId = `${prefix}-archive`;
+  const stagePanelId = `${prefix}-stage`;
 
   useEffect(() => {
     if (panel === null && !disabled && restoreFocus.current) {
       const button =
         restoreFocus.current === "edit"
           ? editButtonRef.current
-          : archiveButtonRef.current;
+          : restoreFocus.current === "stage"
+            ? stageButtonRef.current
+            : archiveButtonRef.current;
       button?.focus();
       restoreFocus.current = null;
     }
   }, [panel, disabled]);
 
-  function closePanel(target: "edit" | "archive") {
+  function closePanel(target: Panel["kind"]) {
     restoreFocus.current = target;
     setPanel(null);
   }
@@ -75,6 +83,26 @@ export default function ApplicationActions({
             {application.jobTitle} at {application.company}
           </span>
         </button>
+        {application.status !== "saved" && (
+          <button
+            ref={stageButtonRef}
+            type="button"
+            disabled={disabled || panel !== null}
+            aria-expanded={panel?.kind === "stage"}
+            aria-controls={stagePanelId}
+            onClick={() => {
+              setNotice("");
+              setPanel({ kind: "stage", original: application });
+            }}
+            className={secondaryButton}
+          >
+            Change stage
+            <span className="sr-only">
+              {" "}
+              {application.jobTitle} at {application.company}
+            </span>
+          </button>
+        )}
         <button
           ref={archiveButtonRef}
           type="button"
@@ -105,6 +133,21 @@ export default function ApplicationActions({
               await onEdit(changes);
               setNotice("Role details updated.");
               closePanel("edit");
+            }}
+          />
+        )}
+      </div>
+
+      <div id={stagePanelId} hidden={panel?.kind !== "stage"}>
+        {panel?.kind === "stage" && (
+          <UpdateStageForm
+            original={panel.original}
+            disabled={disabled}
+            onCancel={() => closePanel("stage")}
+            onSubmit={async (changes) => {
+              await onStageChange(changes);
+              setNotice("Application stage updated.");
+              closePanel("stage");
             }}
           />
         )}

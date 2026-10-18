@@ -25,6 +25,23 @@ ApplicationStatus = Literal[
 ]
 
 
+AppliedApplicationStatus = Literal[
+    "applied",
+    "screening",
+    "interview",
+    "offer",
+    "rejected",
+    "withdrawn",
+]
+
+
+class ApplicationStageUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: AppliedApplicationStatus
+    expected_status: AppliedApplicationStatus
+
+
 ApplicationLabel = Annotated[
     str,
     Field(

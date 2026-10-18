@@ -25,6 +25,7 @@ from app.schemas import (
     ApplicationPage,
     ApplicationRead,
     ApplicationRestore,
+    ApplicationStageUpdate,
     ApplicationUpdate,
     ArchivedApplicationItem,
     ArchivedApplicationPage,
@@ -398,6 +399,52 @@ def restore_application(
         # Returning an already active role makes a lost-response retry safe.
         if application.archived_at is not None:
             application.archived_at = None
+            session.flush()
+            session.refresh(application)
+
+        result = ApplicationRead.model_validate(application)
+
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.post(
+    "/{application_id}/stage",
+    response_model=ApplicationRead,
+    responses={
+        404: {"description": "Active application not found"},
+        409: {"description": "Application stage has changed or no application date is recorded"},
+    },
+)
+def update_application_stage(
+    application_id: UUID,
+    payload: ApplicationStageUpdate,
+    response: Response,
+    identity: IdentityDependency,
+    session: SessionDependency,
+) -> ApplicationRead:
+    with session.begin():
+        application = _owned_application_for_update(
+            session, identity, application_id
+        )
+
+        if application.status == "saved":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Record an application date with Mark as applied before changing its stage.",
+                headers={"Cache-Control": "no-store"},
+            )
+
+        # Returning an already achieved target makes a same-request retry a no-op.
+        if application.status != payload.status:
+            if application.status != payload.expected_status:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This role's stage has changed. Refresh the list before choosing a new stage.",
+                    headers={"Cache-Control": "no-store"},
+                )
+
+            application.status = payload.status
             session.flush()
             session.refresh(application)
 

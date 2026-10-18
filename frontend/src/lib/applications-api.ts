@@ -17,6 +17,13 @@ export type JobApplication = {
 
 export type ApplicationView = "active" | "archived";
 
+export type ApplicationStage = Exclude<ApplicationStatus, "saved">;
+
+export type ApplicationStageChange = {
+  expectedStatus: ApplicationStage;
+  status: ApplicationStage;
+};
+
 export type ArchivedJobApplication = JobApplication & {
   archivedAt: string;
 };
@@ -96,6 +103,10 @@ function isStatus(value: unknown): value is ApplicationStatus {
     value === "rejected" ||
     value === "withdrawn"
   );
+}
+
+export function isApplicationStage(value: unknown): value is ApplicationStage {
+  return isStatus(value) && value !== "saved";
 }
 
 export function isCalendarDate(value: unknown): value is string {
@@ -227,6 +238,8 @@ function serverMessage(payload: unknown): string | undefined {
     job_title: "Job title",
     applied_on: "Application date",
     time_zone: "Time zone",
+    status: "Stage",
+    expected_status: "Previous stage",
   };
   const field: unknown = Array.isArray(detail.loc) ? detail.loc.at(-1) : null;
   const label = typeof field === "string" ? labels[field] : undefined;
@@ -474,5 +487,34 @@ export function restoreApplication(
       return result;
     },
     { method: "POST", body: {} },
+  );
+}
+
+export async function updateApplicationStage(
+  token: string,
+  applicationId: string,
+  changes: ApplicationStageChange,
+): Promise<JobApplication> {
+  if (
+    !isApplicationStage(changes.status) ||
+    !isApplicationStage(changes.expectedStatus)
+  ) {
+    throw new ApiError("Choose a valid stage for an applied role.");
+  }
+
+  return request(
+    `/api/applications/${encodeURIComponent(applicationId)}/stage`,
+    token,
+    (value) => {
+      const result = parseApplication(value);
+      if (result.id !== applicationId || result.status !== changes.status) {
+        throw new Error("Unexpected stage confirmation.");
+      }
+      return result;
+    },
+    {
+      method: "POST",
+      body: { status: changes.status, expected_status: changes.expectedStatus },
+    },
   );
 }

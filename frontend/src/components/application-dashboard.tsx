@@ -18,6 +18,7 @@ import {
   type ApplicationEdits,
   type ApplicationPage,
   type ApplicationStatus,
+  type ApplicationStageChange,
   type ApplicationView,
   type ArchivedApplicationPage,
   archiveApplication,
@@ -29,6 +30,7 @@ import {
   recordApplicationDate,
   restoreApplication,
   updateApplication,
+  updateApplicationStage,
 } from "@/lib/applications-api";
 
 const PAGE_SIZE = 25;
@@ -238,6 +240,18 @@ function WorkspaceContent({ userId }: { userId: string }) {
     onSuccess: refreshSavedData,
   });
 
+  const stageMutation = useMutation({
+    mutationFn: async ({
+      applicationId,
+      changes,
+    }: {
+      applicationId: string;
+      changes: ApplicationStageChange;
+    }) => updateApplicationStage(await sessionToken(), applicationId, changes),
+    onMutate: cancelOldReads,
+    onSuccess: refreshSavedData,
+  });
+
   const archiveMutation = useMutation({
     mutationFn: async (application: JobApplication) =>
       archiveApplication(await sessionToken(), application.id),
@@ -302,6 +316,15 @@ function WorkspaceContent({ userId }: { userId: string }) {
     return runWrite(() => editMutation.mutateAsync({ applicationId, changes }));
   }
 
+  function changeStage(
+    applicationId: string,
+    changes: ApplicationStageChange,
+  ): Promise<void> {
+    return runWrite(() =>
+      stageMutation.mutateAsync({ applicationId, changes }),
+    );
+  }
+
   function archiveRole(application: JobApplication): Promise<void> {
     return runWrite(() => archiveMutation.mutateAsync(application));
   }
@@ -322,6 +345,7 @@ function WorkspaceContent({ userId }: { userId: string }) {
     saveMutation.isPending ||
     appliedMutation.isPending ||
     editMutation.isPending ||
+    stageMutation.isPending ||
     archiveMutation.isPending ||
     restoreMutation.isPending;
   const busy = mutating || applicationsQuery.isFetching;
@@ -568,6 +592,9 @@ function WorkspaceContent({ userId }: { userId: string }) {
                           disabled={!canWrite}
                           onEdit={(changes) =>
                             editRole(application.id, changes)
+                          }
+                          onStageChange={(changes) =>
+                            changeStage(application.id, changes)
                           }
                           onArchive={() => archiveRole(application)}
                           onApply={(appliedOn) =>

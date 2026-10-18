@@ -6,7 +6,9 @@ import {
   createApplication,
   isCalendarDate,
   listApplications,
+  listArchivedApplications,
   recordApplicationDate,
+  restoreApplication,
   updateApplication,
 } from "../src/lib/applications-api.ts";
 
@@ -411,6 +413,174 @@ test("management requests reject missing tokens before sending a request", async
   for (const operation of [
     () => updateApplication("", id, { company: "Corrected Company" }),
     () => archiveApplication("", id),
+  ]) {
+    await assert.rejects(
+      operation(),
+      (error) => error instanceof ApiError && error.status === 401,
+    );
+  }
+  assert.equal(calls, 0);
+});
+
+function archivedPage(overrides = {}) {
+  return page({
+    items: [role({ archived_at: "2026-10-18T04:00:00.123456Z" })],
+    total: 1,
+    overview: {
+      tracked_roles: 4,
+      submitted_applications: 3,
+      interviews: 1,
+      offers: 1,
+    },
+    ...overrides,
+  });
+}
+
+test("archived listing maps archive times and keeps active totals separate", async () => {
+  globalThis.fetch = async (url, options) => {
+    assert.equal(
+      url,
+      "http://127.0.0.1:8000/api/applications/archived?limit=25&offset=0",
+    );
+    assert.equal(options.method, "GET");
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.cache, "no-store");
+    return Response.json(archivedPage());
+  };
+  const result = await listArchivedApplications("test-token", 0);
+  assert.equal(result.total, 1);
+  assert.equal(result.overview.trackedRoles, 4);
+  assert.equal(result.items[0].archivedAt, "2026-10-18T04:00:00.123456Z");
+  assert.equal(result.items[0].jobTitle, "Frontend Developer");
+});
+
+test("archived pages reject missing totals and invalid archive timestamps", async () => {
+  for (const invalid of [
+    archivedPage({ total: undefined }),
+    archivedPage({ total: -1 }),
+    archivedPage({ total: 1.5 }),
+    archivedPage({ items: [role()] }),
+    archivedPage({ items: [role({ archived_at: null })] }),
+    archivedPage({ items: [role({ archived_at: "2026-02-30T04:00:00Z" })] }),
+  ]) {
+    globalThis.fetch = async () => Response.json(invalid);
+    await assert.rejects(listArchivedApplications("test-token", 0), ApiError);
+  }
+});
+
+test("an empty archive page retains its total and pagination metadata", async () => {
+  globalThis.fetch = async (url) => {
+    assert.equal(
+      url,
+      "http://127.0.0.1:8000/api/applications/archived?limit=10&offset=1000",
+    );
+    return Response.json(
+      archivedPage({ items: [], total: 3, offset: 1000, limit: 10 }),
+    );
+  };
+  const result = await listArchivedApplications("test-token", 1000, 10);
+  assert.deepEqual(result.items, []);
+  assert.equal(result.total, 3);
+  assert.equal(result.offset, 1000);
+  assert.equal(result.limit, 10);
+});
+
+test("archived list cancellation remains a cancellation", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const cancellation = new DOMException("Cancelled", "AbortError");
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(options.signal.aborted, true);
+    throw cancellation;
+  };
+  await assert.rejects(
+    listArchivedApplications("test-token", 0, 25, controller.signal),
+    (error) => error === cancellation,
+  );
+});
+
+test("archived listing reports an expired session", async () => {
+  globalThis.fetch = async () =>
+    Response.json({ detail: "Authentication required" }, { status: 401 });
+  await assert.rejects(
+    listArchivedApplications("test-token", 0),
+    (error) =>
+      error instanceof ApiError &&
+      error.status === 401 &&
+      /sign in/i.test(error.message),
+  );
+});
+
+test("restore sends an empty POST body and preserves returned progress", async () => {
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, `http://127.0.0.1:8000/api/applications/${id}/restore`);
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    assert.equal(options.credentials, "omit");
+    assert.deepEqual(JSON.parse(options.body), {});
+    return Response.json(
+      role({ status: "interview", applied_on: "2026-01-15" }),
+    );
+  };
+  const result = await restoreApplication("test-token", id);
+  assert.equal(result.id, id);
+  assert.equal(result.status, "interview");
+  assert.equal(result.appliedOn, "2026-01-15");
+});
+
+test("restore rejects malformed confirmations and mismatched role IDs", async () => {
+  for (const invalid of [
+    {},
+    role({ id: "ef189a9e-2d96-41bc-86e8-1934f2a2a733" }),
+    role({ status: "interview", applied_on: null }),
+    { id, archived_at: "2026-10-18T04:00:00Z" },
+  ]) {
+    globalThis.fetch = async () => Response.json(invalid);
+    await assert.rejects(
+      restoreApplication("test-token", id),
+      (error) => error instanceof ApiError && error.mayHaveSaved,
+    );
+  }
+});
+
+test("restore distinguishes missing roles from uncertain server failures", async () => {
+  for (const status of [404, 503]) {
+    globalThis.fetch = async () =>
+      Response.json({ detail: "Request failed" }, { status });
+    await assert.rejects(
+      restoreApplication("test-token", id),
+      (error) =>
+        error instanceof ApiError &&
+        error.status === status &&
+        error.mayHaveSaved === (status === 503) &&
+        /refresh/i.test(error.message),
+    );
+  }
+});
+
+test("a lost restore response is not automatically retried", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new TypeError("Connection lost");
+  };
+  await assert.rejects(
+    restoreApplication("test-token", id),
+    (error) => error instanceof ApiError && error.mayHaveSaved,
+  );
+  assert.equal(calls, 1);
+});
+
+test("archive listing and restore reject absent tokens before HTTP", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json(archivedPage());
+  };
+  for (const operation of [
+    () => listArchivedApplications("", 0),
+    () => restoreApplication("", id),
   ]) {
     await assert.rejects(
       operation(),

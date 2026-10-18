@@ -15,6 +15,12 @@ export type JobApplication = {
   appliedOn: string | null;
 };
 
+export type ApplicationView = "active" | "archived";
+
+export type ArchivedJobApplication = JobApplication & {
+  archivedAt: string;
+};
+
 export type ApplicationEdits = {
   company?: string;
   jobTitle?: string;
@@ -38,6 +44,11 @@ export type ApplicationPage = {
   offset: number;
   hasMore: boolean;
   overview: ApplicationOverview;
+};
+
+export type ArchivedApplicationPage = Omit<ApplicationPage, "items"> & {
+  items: ArchivedJobApplication[];
+  total: number;
 };
 
 export class ApiError extends Error {
@@ -178,6 +189,25 @@ function parsePage(value: unknown): ApplicationPage {
       interviews: value.overview.interviews,
       offers: value.overview.offers,
     },
+  };
+}
+
+function parseArchivedPage(value: unknown): ArchivedApplicationPage {
+  const page = parsePage(value);
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.items) ||
+    !isNonnegativeInteger(value.total)
+  ) {
+    throw new Error("Invalid archived applications page.");
+  }
+  return {
+    ...page,
+    total: value.total,
+    items: value.items.map((item: unknown) => ({
+      ...parseApplication(item),
+      archivedAt: parseArchivedApplication(item).archivedAt,
+    })),
   };
 }
 
@@ -408,6 +438,37 @@ export function archiveApplication(
     token,
     (value) => {
       const result = parseArchivedApplication(value);
+      if (result.id !== applicationId)
+        throw new Error("Unexpected application ID.");
+      return result;
+    },
+    { method: "POST", body: {} },
+  );
+}
+
+export function listArchivedApplications(
+  token: string,
+  offset: number,
+  limit = 25,
+  signal?: AbortSignal,
+): Promise<ArchivedApplicationPage> {
+  return request(
+    `/api/applications/archived?limit=${limit}&offset=${offset}`,
+    token,
+    parseArchivedPage,
+    { signal },
+  );
+}
+
+export function restoreApplication(
+  token: string,
+  applicationId: string,
+): Promise<JobApplication> {
+  return request(
+    `/api/applications/${encodeURIComponent(applicationId)}/restore`,
+    token,
+    (value) => {
+      const result = parseApplication(value);
       if (result.id !== applicationId)
         throw new Error("Unexpected application ID.");
       return result;

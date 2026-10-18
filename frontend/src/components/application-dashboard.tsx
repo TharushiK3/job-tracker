@@ -11,17 +11,23 @@ import {
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import ApplicationActions from "@/components/application-actions";
+import RestoreRoleButton from "@/components/restore-role-button";
 import SaveRoleForm from "@/components/save-role-form";
 import {
   ApiError,
   type ApplicationEdits,
+  type ApplicationPage,
   type ApplicationStatus,
+  type ApplicationView,
+  type ArchivedApplicationPage,
   archiveApplication,
   createApplication,
   errorMessage,
   listApplications,
+  listArchivedApplications,
   type JobApplication,
   recordApplicationDate,
+  restoreApplication,
   updateApplication,
 } from "@/lib/applications-api";
 
@@ -62,6 +68,24 @@ function SummaryCard({
         {value === undefined && <span className="sr-only"> Not loaded</span>}
       </dd>
     </div>
+  );
+}
+
+function ArchivedTime({ application }: { application: JobApplication }) {
+  if (
+    !("archivedAt" in application) ||
+    typeof application.archivedAt !== "string"
+  ) {
+    return <span>{"\u2014"}</span>;
+  }
+  const timestamp = application.archivedAt;
+  return (
+    <time dateTime={timestamp}>
+      {new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(timestamp))}
+    </time>
   );
 }
 
@@ -133,9 +157,10 @@ function WorkspaceContent({ userId }: { userId: string }) {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
+  const [view, setView] = useState<ApplicationView>("active");
   const [actionNotice, setActionNotice] = useState("");
   const actionNoticeRef = useRef<HTMLParagraphElement>(null);
-  const focusAfterArchive = useRef(false);
+  const focusAfterAction = useRef(false);
   const writeInFlight = useRef(false);
   const queryPrefix = ["applications", userId];
 
@@ -147,15 +172,21 @@ function WorkspaceContent({ userId }: { userId: string }) {
     return token;
   }
 
-  const applicationsQuery = useQuery({
-    queryKey: ["applications", userId, offset],
-    queryFn: async ({ signal }) =>
-      listApplications(await sessionToken(), offset, PAGE_SIZE, signal),
-  });
+  const applicationsQuery = useQuery<ApplicationPage | ArchivedApplicationPage>(
+    {
+      queryKey: ["applications", userId, view, offset],
+      queryFn: async ({ signal }) => {
+        const token = await sessionToken();
+        return view === "archived"
+          ? listArchivedApplications(token, offset, PAGE_SIZE, signal)
+          : listApplications(token, offset, PAGE_SIZE, signal);
+      },
+    },
+  );
 
   async function cancelOldReads() {
     setActionNotice("");
-    focusAfterArchive.current = false;
+    focusAfterAction.current = false;
     await queryClient.cancelQueries({ queryKey: queryPrefix });
   }
 
@@ -177,6 +208,7 @@ function WorkspaceContent({ userId }: { userId: string }) {
     }) => createApplication(await sessionToken(), company, jobTitle),
     onMutate: cancelOldReads,
     onSuccess: async () => {
+      setView("active");
       setOffset(0);
       await refreshSavedData();
     },
@@ -214,7 +246,23 @@ function WorkspaceContent({ userId }: { userId: string }) {
       setActionNotice(
         `Archived ${application.jobTitle} at ${application.company}.`,
       );
-      focusAfterArchive.current = true;
+      focusAfterAction.current = true;
+      if (offset > 0 && applicationsQuery.data?.items.length === 1) {
+        setOffset((current) => Math.max(0, current - PAGE_SIZE));
+      }
+      await refreshSavedData();
+    },
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: async (application: JobApplication) =>
+      restoreApplication(await sessionToken(), application.id),
+    onMutate: cancelOldReads,
+    onSuccess: async (_result, application) => {
+      setActionNotice(
+        `Restored ${application.jobTitle} at ${application.company} to your active roles.`,
+      );
+      focusAfterAction.current = true;
       if (offset > 0 && applicationsQuery.data?.items.length === 1) {
         setOffset((current) => Math.max(0, current - PAGE_SIZE));
       }
@@ -258,16 +306,30 @@ function WorkspaceContent({ userId }: { userId: string }) {
     return runWrite(() => archiveMutation.mutateAsync(application));
   }
 
+  function restoreRole(application: JobApplication): Promise<void> {
+    return runWrite(() => restoreMutation.mutateAsync(application));
+  }
+
+  function chooseView(nextView: ApplicationView) {
+    setView(nextView);
+    setOffset(0);
+    setActionNotice("");
+    focusAfterAction.current = false;
+  }
+
   const page = applicationsQuery.data;
   const mutating =
     saveMutation.isPending ||
     appliedMutation.isPending ||
     editMutation.isPending ||
-    archiveMutation.isPending;
+    archiveMutation.isPending ||
+    restoreMutation.isPending;
   const busy = mutating || applicationsQuery.isFetching;
   const canWrite = Boolean(page) && !applicationsQuery.isError && !mutating;
   const items = page?.items ?? [];
   const overview = page?.overview;
+  const totalCount =
+    page && "total" in page ? page.total : overview?.trackedRoles;
   const listStatus = applicationsQuery.isFetching
     ? page
       ? "Updating your applications..."
@@ -277,9 +339,9 @@ function WorkspaceContent({ userId }: { userId: string }) {
       : "";
 
   useEffect(() => {
-    if (actionNotice && !mutating && focusAfterArchive.current) {
+    if (actionNotice && !mutating && focusAfterAction.current) {
       actionNoticeRef.current?.focus();
-      focusAfterArchive.current = false;
+      focusAfterAction.current = false;
     }
   }, [actionNotice, mutating]);
 
@@ -326,6 +388,9 @@ function WorkspaceContent({ userId }: { userId: string }) {
           <h2 id="overview-heading" className="sr-only">
             Application overview
           </h2>
+          <p className="mb-3 text-sm font-medium text-slate-600">
+            Active workspace totals
+          </p>
           <dl className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <SummaryCard label="Tracked roles" value={overview?.trackedRoles} />
             <SummaryCard
@@ -349,10 +414,12 @@ function WorkspaceContent({ userId }: { userId: string }) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 id="applications-heading" className="text-lg font-semibold">
-                  Applications
+                  {view === "archived" ? "Archived roles" : "Applications"}
                 </h2>
                 <p className="mt-1 text-sm text-slate-600">
-                  Your saved opportunities and application progress.
+                  {view === "archived"
+                    ? "Restore a role to return it to your active workspace. Archive times use your device's time zone."
+                    : "Your saved opportunities and application progress."}
                 </p>
               </div>
               <button
@@ -366,6 +433,22 @@ function WorkspaceContent({ userId }: { userId: string }) {
                 {applicationsQuery.isFetching ? "Refreshing..." : "Refresh"}
               </button>
             </div>
+
+            <fieldset className="mt-4 flex min-w-0 flex-wrap gap-2 border-0 p-0">
+              <legend className="sr-only">Application view</legend>
+              {(["active", "archived"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={view === option}
+                  disabled={mutating}
+                  onClick={() => chooseView(option)}
+                  className={`rounded-lg border px-4 py-2 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:opacity-50 ${view === option ? "border-teal-700 bg-teal-700 text-white" : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                >
+                  {option === "active" ? "Active" : "Archived"}
+                </button>
+              ))}
+            </fieldset>
 
             <p role="status" className="mt-3 min-h-5 text-sm text-slate-600">
               {listStatus}
@@ -410,7 +493,10 @@ function WorkspaceContent({ userId }: { userId: string }) {
           >
             <table className="w-full min-w-[820px] text-left text-sm">
               <caption className="sr-only">
-                Tracked job opportunities. Application dates use year-month-day.
+                {view === "archived"
+                  ? "Archived job opportunities."
+                  : "Active job opportunities."}{" "}
+                Application dates use year-month-day.
               </caption>
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
                 <tr>
@@ -423,6 +509,11 @@ function WorkspaceContent({ userId }: { userId: string }) {
                   <th scope="col" className="px-6 py-3 font-medium">
                     Application date
                   </th>
+                  {view === "archived" && (
+                    <th scope="col" className="px-6 py-3 font-medium">
+                      Archived on
+                    </th>
+                  )}
                   <th scope="col" className="px-6 py-3 font-medium">
                     Action
                   </th>
@@ -459,16 +550,31 @@ function WorkspaceContent({ userId }: { userId: string }) {
                         "Not applied"
                       )}
                     </td>
+                    {view === "archived" && (
+                      <td className="px-6 py-5 text-slate-600">
+                        <ArchivedTime application={application} />
+                      </td>
+                    )}
                     <td className="px-6 py-5 align-top">
-                      <ApplicationActions
-                        application={application}
-                        disabled={!canWrite}
-                        onEdit={(changes) => editRole(application.id, changes)}
-                        onArchive={() => archiveRole(application)}
-                        onApply={(appliedOn) =>
-                          markAsApplied(application.id, appliedOn)
-                        }
-                      />
+                      {view === "archived" ? (
+                        <RestoreRoleButton
+                          application={application}
+                          disabled={!canWrite}
+                          onRestore={() => restoreRole(application)}
+                        />
+                      ) : (
+                        <ApplicationActions
+                          application={application}
+                          disabled={!canWrite}
+                          onEdit={(changes) =>
+                            editRole(application.id, changes)
+                          }
+                          onArchive={() => archiveRole(application)}
+                          onApply={(appliedOn) =>
+                            markAsApplied(application.id, appliedOn)
+                          }
+                        />
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -476,16 +582,18 @@ function WorkspaceContent({ userId }: { userId: string }) {
                 {items.length === 0 && (
                   <tr>
                     <td
-                      colSpan={4}
+                      colSpan={view === "archived" ? 5 : 4}
                       className="px-6 py-10 text-center text-slate-600"
                     >
                       {!page
                         ? applicationsQuery.isError
                           ? "Use Refresh to load your applications."
                           : "Loading your applications..."
-                        : overview?.trackedRoles === 0
-                          ? "Your workspace is ready. Save your first role above."
-                          : "There are no roles on this page. Return to the first page."}
+                        : offset > 0
+                          ? "There are no roles on this page. Return to the first page."
+                          : view === "archived"
+                            ? "No archived roles. Roles you archive will appear here."
+                            : "Your workspace is ready. Save your first role above."}
                       {page && page.offset > 0 && (
                         <button
                           type="button"
@@ -505,12 +613,16 @@ function WorkspaceContent({ userId }: { userId: string }) {
 
           {page && (
             <nav
-              aria-label="Application pages"
+              aria-label={
+                view === "archived"
+                  ? "Archived application pages"
+                  : "Active application pages"
+              }
               className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-6 py-4"
             >
               <p className="text-sm text-slate-600">
                 {items.length > 0
-                  ? `Showing ${page.offset + 1}-${page.offset + items.length} of ${page.overview.trackedRoles} roles`
+                  ? `Showing ${page.offset + 1}-${page.offset + items.length} of ${totalCount} roles`
                   : "No roles on this page"}
               </p>
               <div className="flex gap-2">

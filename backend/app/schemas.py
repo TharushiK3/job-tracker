@@ -75,6 +75,12 @@ class ApplicationArchive(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ApplicationRestore(BaseModel):
+    """The restore command accepts an empty JSON object."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ApplicationArchivedRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -152,4 +158,17 @@ class ApplicationPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
+    overview: ApplicationOverview
+
+
+class ArchivedApplicationItem(ApplicationRead):
+    archived_at: datetime
+
+
+class ArchivedApplicationPage(BaseModel):
+    items: list[ArchivedApplicationItem]
+    limit: int
+    offset: int
+    has_more: bool
+    total: int = Field(ge=0)
     overview: ApplicationOverview

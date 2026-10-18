@@ -24,7 +24,10 @@ from app.schemas import (
     ApplicationOverview,
     ApplicationPage,
     ApplicationRead,
+    ApplicationRestore,
     ApplicationUpdate,
+    ArchivedApplicationItem,
+    ArchivedApplicationPage,
 )
 from app.users import get_or_create_user_id
 
@@ -85,6 +88,45 @@ def _owned_application_for_update(
     return application
 
 
+def _active_overview(
+    session: Session,
+    identity: AuthenticatedIdentity,
+) -> ApplicationOverview:
+    filters = (
+        User.auth_issuer == identity.issuer,
+        User.auth_subject == identity.subject,
+        JobApplication.archived_at.is_(None),
+    )
+
+    overview_statement = (
+        select(
+            func.count(JobApplication.id).label(
+                "tracked_roles"
+            ),
+            func.count(JobApplication.id)
+            .filter(JobApplication.applied_on.is_not(None))
+            .label("submitted_applications"),
+            func.count(JobApplication.id)
+            .filter(JobApplication.status == "interview")
+            .label("interviews"),
+            func.count(JobApplication.id)
+            .filter(JobApplication.status == "offer")
+            .label("offers"),
+        )
+        .select_from(JobApplication)
+        .join(User, JobApplication.user_id == User.id)
+        .where(*filters)
+    )
+
+    overview_values = session.execute(
+        overview_statement
+    ).mappings().one()
+
+    return ApplicationOverview.model_validate(
+        overview_values
+    )
+
+
 @router.post(
     "",
     response_model=ApplicationRead,
@@ -134,33 +176,7 @@ def list_applications(
         JobApplication.archived_at.is_(None),
     )
 
-    overview_statement = (
-        select(
-            func.count(JobApplication.id).label(
-                "tracked_roles"
-            ),
-            func.count(JobApplication.id)
-            .filter(JobApplication.applied_on.is_not(None))
-            .label("submitted_applications"),
-            func.count(JobApplication.id)
-            .filter(JobApplication.status == "interview")
-            .label("interviews"),
-            func.count(JobApplication.id)
-            .filter(JobApplication.status == "offer")
-            .label("offers"),
-        )
-        .select_from(JobApplication)
-        .join(User, JobApplication.user_id == User.id)
-        .where(*filters)
-    )
-
-    overview_values = session.execute(
-        overview_statement
-    ).mappings().one()
-
-    overview = ApplicationOverview.model_validate(
-        overview_values
-    )
+    overview = _active_overview(session, identity)
 
     applications_statement = (
         select(JobApplication)
@@ -187,6 +203,60 @@ def list_applications(
         offset=offset,
         has_more=len(applications) > limit,
         overview=overview,
+    )
+
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.get(
+    "/archived",
+    response_model=ArchivedApplicationPage,
+)
+def list_archived_applications(
+    response: Response,
+    identity: IdentityDependency,
+    session: SessionDependency,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ArchivedApplicationPage:
+    filters = (
+        User.auth_issuer == identity.issuer,
+        User.auth_subject == identity.subject,
+        JobApplication.archived_at.is_not(None),
+    )
+
+    total_statement = (
+        select(func.count(JobApplication.id))
+        .select_from(JobApplication)
+        .join(User, JobApplication.user_id == User.id)
+        .where(*filters)
+    )
+    total = session.execute(total_statement).scalar_one()
+
+    statement = (
+        select(JobApplication)
+        .join(User, JobApplication.user_id == User.id)
+        .where(*filters)
+        .order_by(
+            JobApplication.archived_at.desc(),
+            JobApplication.id.desc(),
+        )
+        .limit(limit + 1)
+        .offset(offset)
+    )
+    applications = session.scalars(statement).all()
+
+    result = ArchivedApplicationPage(
+        items=[
+            ArchivedApplicationItem.model_validate(application)
+            for application in applications[:limit]
+        ],
+        limit=limit,
+        offset=offset,
+        has_more=len(applications) > limit,
+        total=total,
+        overview=_active_overview(session, identity),
     )
 
     response.headers["Cache-Control"] = "no-store"
@@ -298,6 +368,40 @@ def archive_application(
             session.refresh(application)
 
         result = ApplicationArchivedRead.model_validate(application)
+
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.post(
+    "/{application_id}/restore",
+    response_model=ApplicationRead,
+    responses={
+        404: {"description": "Application not found"},
+    },
+)
+def restore_application(
+    application_id: UUID,
+    payload: ApplicationRestore,
+    response: Response,
+    identity: IdentityDependency,
+    session: SessionDependency,
+) -> ApplicationRead:
+    with session.begin():
+        application = _owned_application_for_update(
+            session,
+            identity,
+            application_id,
+            include_archived=True,
+        )
+
+        # Returning an already active role makes a lost-response retry safe.
+        if application.archived_at is not None:
+            application.archived_at = None
+            session.flush()
+            session.refresh(application)
+
+        result = ApplicationRead.model_validate(application)
 
     response.headers["Cache-Control"] = "no-store"
     return result

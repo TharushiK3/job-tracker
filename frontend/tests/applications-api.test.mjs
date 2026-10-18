@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import {
   ApiError,
+  archiveApplication,
   createApplication,
   isCalendarDate,
   listApplications,
   recordApplicationDate,
+  updateApplication,
 } from "../src/lib/applications-api.ts";
 
 const originalFetch = globalThis.fetch;
@@ -93,7 +95,7 @@ test("marking applied includes the browser time zone", async () => {
   globalThis.fetch = async (url, options) => {
     assert.equal(
       url,
-      "http://127.0.0.1:8000/api/applications/" + id + "/mark-applied",
+      `http://127.0.0.1:8000/api/applications/${id}/mark-applied`,
     );
     assert.deepEqual(JSON.parse(options.body), {
       applied_on: "2026-01-15",
@@ -226,5 +228,194 @@ test("a missing API address fails before sending a token", async () => {
     (error) =>
       error instanceof ApiError && /address is missing/i.test(error.message),
   );
+  assert.equal(calls, 0);
+});
+
+test("edits use PATCH and send only the supplied labels", async () => {
+  const examples = [
+    [{ company: "Corrected Company" }, { company: "Corrected Company" }],
+    [{ jobTitle: "Corrected Title" }, { job_title: "Corrected Title" }],
+    [
+      { company: "Corrected Company", jobTitle: "Corrected Title" },
+      { company: "Corrected Company", job_title: "Corrected Title" },
+    ],
+  ];
+  for (const [changes, expected] of examples) {
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, `http://127.0.0.1:8000/api/applications/${id}`);
+      assert.equal(options.method, "PATCH");
+      assert.equal(options.headers.Authorization, "Bearer test-token");
+      assert.equal(options.headers["Content-Type"], "application/json");
+      assert.equal(options.credentials, "omit");
+      assert.equal(options.cache, "no-store");
+      assert.deepEqual(JSON.parse(options.body), expected);
+      return Response.json(
+        role({
+          ...expected,
+          status: "interview",
+          applied_on: "2026-01-15",
+        }),
+      );
+    };
+    const result = await updateApplication("test-token", id, changes);
+    assert.equal(result.status, "interview");
+    assert.equal(result.appliedOn, "2026-01-15");
+  }
+});
+
+test("edit encoding excludes owner and status fields", async () => {
+  globalThis.fetch = async (_url, options) => {
+    assert.deepEqual(JSON.parse(options.body), {
+      company: "Corrected Company",
+    });
+    return Response.json(role({ company: "Corrected Company" }));
+  };
+  await updateApplication("test-token", id, {
+    company: "Corrected Company",
+    userId: "unsupported-owner",
+    status: "offer",
+    appliedOn: "2026-01-15",
+  });
+});
+
+test("empty edits fail before making an HTTP request", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json(role());
+  };
+  await assert.rejects(
+    updateApplication("test-token", id, {}),
+    (error) =>
+      error instanceof ApiError && /before saving/i.test(error.message),
+  );
+  assert.equal(calls, 0);
+});
+
+test("a failed PATCH is a write with uncertain confirmation and no retry", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new TypeError("Connection lost");
+  };
+  await assert.rejects(
+    updateApplication("test-token", id, { company: "Corrected Company" }),
+    (error) =>
+      error instanceof ApiError &&
+      error.mayHaveSaved &&
+      /refresh/i.test(error.message),
+  );
+  assert.equal(calls, 1);
+});
+
+test("archiving sends an empty JSON object and maps the confirmation", async () => {
+  const timestamp = "2026-10-18T04:00:00.123456Z";
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, `http://127.0.0.1:8000/api/applications/${id}/archive`);
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    assert.equal(options.headers["Content-Type"], "application/json");
+    assert.equal(options.credentials, "omit");
+    assert.deepEqual(JSON.parse(options.body), {});
+    return Response.json({ id, archived_at: timestamp });
+  };
+  assert.deepEqual(await archiveApplication("test-token", id), {
+    id,
+    archivedAt: timestamp,
+  });
+});
+
+test("malformed archive confirmations are rejected", async () => {
+  for (const invalid of [
+    {},
+    { id, archived_at: null },
+    { id: "invalid-id", archived_at: "2026-10-18T04:00:00Z" },
+    { id, archived_at: "2026-10-18" },
+    { id, archived_at: "2026-02-30T04:00:00Z" },
+    { id, archived_at: "2026-10-18T25:00:00Z" },
+    { id, archived_at: "2026-10-18T04:00:00" },
+  ]) {
+    globalThis.fetch = async () => Response.json(invalid);
+    await assert.rejects(
+      archiveApplication("test-token", id),
+      (error) => error instanceof ApiError && error.mayHaveSaved,
+    );
+  }
+});
+
+test("management confirmations must match the requested role", async () => {
+  const otherId = "ef189a9e-2d96-41bc-86e8-1934f2a2a733";
+  globalThis.fetch = async () => Response.json(role({ id: otherId }));
+  await assert.rejects(
+    updateApplication("test-token", id, { company: "Corrected Company" }),
+    (error) => error instanceof ApiError && error.mayHaveSaved,
+  );
+
+  globalThis.fetch = async () =>
+    Response.json({
+      id: otherId,
+      archived_at: "2026-10-18T04:00:00Z",
+    });
+  await assert.rejects(
+    archiveApplication("test-token", id),
+    (error) => error instanceof ApiError && error.mayHaveSaved,
+  );
+});
+
+test("missing management targets give a useful refresh message", async () => {
+  globalThis.fetch = async () =>
+    Response.json({ detail: "Application not found" }, { status: 404 });
+  for (const operation of [
+    () => updateApplication("test-token", id, { company: "Corrected Company" }),
+    () => archiveApplication("test-token", id),
+  ]) {
+    await assert.rejects(
+      operation(),
+      (error) =>
+        error instanceof ApiError &&
+        error.status === 404 &&
+        !error.mayHaveSaved &&
+        /refresh/i.test(error.message),
+    );
+  }
+});
+
+test("management server errors remain uncertain writes and are not retried", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json({ detail: "Service unavailable" }, { status: 503 });
+  };
+  for (const operation of [
+    () => updateApplication("test-token", id, { company: "Corrected Company" }),
+    () => archiveApplication("test-token", id),
+  ]) {
+    await assert.rejects(
+      operation(),
+      (error) =>
+        error instanceof ApiError &&
+        error.status === 503 &&
+        error.mayHaveSaved &&
+        /refresh/i.test(error.message),
+    );
+  }
+  assert.equal(calls, 2);
+});
+
+test("management requests reject missing tokens before sending a request", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return Response.json(role());
+  };
+  for (const operation of [
+    () => updateApplication("", id, { company: "Corrected Company" }),
+    () => archiveApplication("", id),
+  ]) {
+    await assert.rejects(
+      operation(),
+      (error) => error instanceof ApiError && error.status === 401,
+    );
+  }
   assert.equal(calls, 0);
 });

@@ -56,7 +56,7 @@ export default function SaveRoleForm({
       await onSave(company, jobTitle);
       form.reset();
       focusAfterSave.current = true;
-      setNotice("Saved " + jobTitle + " at " + company + ".");
+      setNotice(`Saved ${jobTitle} at ${company}.`);
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {

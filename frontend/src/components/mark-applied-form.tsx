@@ -12,13 +12,10 @@ type MarkAppliedFormProps = {
 
 function getLocalToday() {
   const today = new Date();
-  return (
-    String(today.getFullYear()).padStart(4, "0") +
-    "-" +
-    String(today.getMonth() + 1).padStart(2, "0") +
-    "-" +
-    String(today.getDate()).padStart(2, "0")
-  );
+  const year = String(today.getFullYear()).padStart(4, "0");
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export default function MarkAppliedForm({
@@ -35,8 +32,8 @@ export default function MarkAppliedForm({
   const [invalidDate, setInvalidDate] = useState(false);
   const submittingRef = useRef(false);
   const confirmationRef = useRef<HTMLParagraphElement>(null);
-  const dateId = "applied-on-" + applicationId;
-  const errorId = dateId + "-error";
+  const dateId = `applied-on-${applicationId}`;
+  const errorId = `${dateId}-error`;
   const busy = disabled || isSubmitting;
 
   useEffect(() => {
@@ -129,10 +126,6 @@ export default function MarkAppliedForm({
             {isSubmitting ? "Recording..." : "Mark as applied"}
           </button>
         </form>
-      )}
-
-      {!canApply && !notice && (
-        <span className="text-sm text-slate-500">&mdash;</span>
       )}
 
       <p

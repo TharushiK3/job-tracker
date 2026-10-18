@@ -9,16 +9,20 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import Link from "next/link";
-import { useRef, useState } from "react";
-import MarkAppliedForm from "@/components/mark-applied-form";
+import { useEffect, useRef, useState } from "react";
+import ApplicationActions from "@/components/application-actions";
 import SaveRoleForm from "@/components/save-role-form";
 import {
   ApiError,
+  type ApplicationEdits,
   type ApplicationStatus,
+  archiveApplication,
   createApplication,
   errorMessage,
   listApplications,
+  type JobApplication,
   recordApplicationDate,
+  updateApplication,
 } from "@/lib/applications-api";
 
 const PAGE_SIZE = 25;
@@ -129,6 +133,9 @@ function WorkspaceContent({ userId }: { userId: string }) {
   const { getToken } = useAuth();
   const queryClient = useQueryClient();
   const [offset, setOffset] = useState(0);
+  const [actionNotice, setActionNotice] = useState("");
+  const actionNoticeRef = useRef<HTMLParagraphElement>(null);
+  const focusAfterArchive = useRef(false);
   const writeInFlight = useRef(false);
   const queryPrefix = ["applications", userId];
 
@@ -147,6 +154,8 @@ function WorkspaceContent({ userId }: { userId: string }) {
   });
 
   async function cancelOldReads() {
+    setActionNotice("");
+    focusAfterArchive.current = false;
     await queryClient.cancelQueries({ queryKey: queryPrefix });
   }
 
@@ -185,37 +194,78 @@ function WorkspaceContent({ userId }: { userId: string }) {
     onSuccess: refreshSavedData,
   });
 
-  async function saveRole(company: string, jobTitle: string): Promise<void> {
+  const editMutation = useMutation({
+    mutationFn: async ({
+      applicationId,
+      changes,
+    }: {
+      applicationId: string;
+      changes: ApplicationEdits;
+    }) => updateApplication(await sessionToken(), applicationId, changes),
+    onMutate: cancelOldReads,
+    onSuccess: refreshSavedData,
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: async (application: JobApplication) =>
+      archiveApplication(await sessionToken(), application.id),
+    onMutate: cancelOldReads,
+    onSuccess: async (_result, application) => {
+      setActionNotice(
+        `Archived ${application.jobTitle} at ${application.company}.`,
+      );
+      focusAfterArchive.current = true;
+      if (offset > 0 && applicationsQuery.data?.items.length === 1) {
+        setOffset((current) => Math.max(0, current - PAGE_SIZE));
+      }
+      await refreshSavedData();
+    },
+  });
+
+  async function runWrite(operation: () => Promise<unknown>): Promise<void> {
     if (writeInFlight.current) {
       throw new Error("Another change is being saved. Try again in a moment.");
     }
     writeInFlight.current = true;
     try {
-      await saveMutation.mutateAsync({ company, jobTitle });
+      await operation();
     } finally {
       writeInFlight.current = false;
     }
   }
 
-  async function markAsApplied(
+  function saveRole(company: string, jobTitle: string): Promise<void> {
+    return runWrite(() => saveMutation.mutateAsync({ company, jobTitle }));
+  }
+
+  function markAsApplied(
     applicationId: string,
     appliedOn: string,
   ): Promise<void> {
-    if (writeInFlight.current) {
-      throw new Error("Another change is being saved. Try again in a moment.");
-    }
-    writeInFlight.current = true;
-    try {
-      await appliedMutation.mutateAsync({ applicationId, appliedOn });
-    } finally {
-      writeInFlight.current = false;
-    }
+    return runWrite(() =>
+      appliedMutation.mutateAsync({ applicationId, appliedOn }),
+    );
+  }
+
+  function editRole(
+    applicationId: string,
+    changes: ApplicationEdits,
+  ): Promise<void> {
+    return runWrite(() => editMutation.mutateAsync({ applicationId, changes }));
+  }
+
+  function archiveRole(application: JobApplication): Promise<void> {
+    return runWrite(() => archiveMutation.mutateAsync(application));
   }
 
   const page = applicationsQuery.data;
-  const mutating = saveMutation.isPending || appliedMutation.isPending;
+  const mutating =
+    saveMutation.isPending ||
+    appliedMutation.isPending ||
+    editMutation.isPending ||
+    archiveMutation.isPending;
   const busy = mutating || applicationsQuery.isFetching;
-  const canEdit = Boolean(page) && !applicationsQuery.isError && !mutating;
+  const canWrite = Boolean(page) && !applicationsQuery.isError && !mutating;
   const items = page?.items ?? [];
   const overview = page?.overview;
   const listStatus = applicationsQuery.isFetching
@@ -225,6 +275,13 @@ function WorkspaceContent({ userId }: { userId: string }) {
     : page && !applicationsQuery.isError
       ? "Applications are up to date."
       : "";
+
+  useEffect(() => {
+    if (actionNotice && !mutating && focusAfterArchive.current) {
+      actionNoticeRef.current?.focus();
+      focusAfterArchive.current = false;
+    }
+  }, [actionNotice, mutating]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950">
@@ -263,7 +320,7 @@ function WorkspaceContent({ userId }: { userId: string }) {
           </a>
         </section>
 
-        <SaveRoleForm disabled={!canEdit} onSave={saveRole} />
+        <SaveRoleForm disabled={!canWrite} onSave={saveRole} />
 
         <section aria-labelledby="overview-heading">
           <h2 id="overview-heading" className="sr-only">
@@ -312,6 +369,15 @@ function WorkspaceContent({ userId }: { userId: string }) {
 
             <p role="status" className="mt-3 min-h-5 text-sm text-slate-600">
               {listStatus}
+            </p>
+
+            <p
+              ref={actionNoticeRef}
+              tabIndex={-1}
+              role="status"
+              className="mt-2 break-words rounded text-sm text-teal-800 focus:outline-2 focus:outline-offset-4 focus:outline-teal-700"
+            >
+              {actionNotice}
             </p>
 
             {applicationsQuery.isError && (
@@ -379,10 +445,7 @@ function WorkspaceContent({ userId }: { userId: string }) {
                     </th>
                     <td className="px-6 py-5">
                       <span
-                        className={
-                          "inline-flex rounded-full px-3 py-1 text-xs font-medium " +
-                          statusStyles[application.status]
-                        }
+                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${statusStyles[application.status]}`}
                       >
                         {statusLabels[application.status]}
                       </span>
@@ -397,12 +460,11 @@ function WorkspaceContent({ userId }: { userId: string }) {
                       )}
                     </td>
                     <td className="px-6 py-5 align-top">
-                      <MarkAppliedForm
-                        applicationId={application.id}
-                        company={application.company}
-                        jobTitle={application.jobTitle}
-                        canApply={application.status === "saved"}
-                        disabled={!canEdit}
+                      <ApplicationActions
+                        application={application}
+                        disabled={!canWrite}
+                        onEdit={(changes) => editRole(application.id, changes)}
+                        onArchive={() => archiveRole(application)}
                         onApply={(appliedOn) =>
                           markAsApplied(application.id, appliedOn)
                         }
@@ -448,13 +510,7 @@ function WorkspaceContent({ userId }: { userId: string }) {
             >
               <p className="text-sm text-slate-600">
                 {items.length > 0
-                  ? "Showing " +
-                    (page.offset + 1) +
-                    "-" +
-                    (page.offset + items.length) +
-                    " of " +
-                    page.overview.trackedRoles +
-                    " roles"
+                  ? `Showing ${page.offset + 1}-${page.offset + items.length} of ${page.overview.trackedRoles} roles`
                   : "No roles on this page"}
               </p>
               <div className="flex gap-2">

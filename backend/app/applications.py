@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -16,11 +17,14 @@ from app.auth import AuthenticatedIdentity, require_identity
 from app.dependencies import get_session
 from app.models import JobApplication, User
 from app.schemas import (
+    ApplicationArchive,
+    ApplicationArchivedRead,
     ApplicationCreate,
     ApplicationMarkApplied,
     ApplicationOverview,
     ApplicationPage,
     ApplicationRead,
+    ApplicationUpdate,
 )
 from app.users import get_or_create_user_id
 
@@ -44,6 +48,41 @@ router = APIRouter(
         503: {"description": "Service temporarily unavailable"},
     },
 )
+
+
+def _owned_application_for_update(
+    session: Session,
+    identity: AuthenticatedIdentity,
+    application_id: UUID,
+    *,
+    include_archived: bool = False,
+) -> JobApplication:
+    """Call inside a transaction; lock only the application's row."""
+    statement = (
+        select(JobApplication)
+        .join(User, JobApplication.user_id == User.id)
+        .where(
+            JobApplication.id == application_id,
+            User.auth_issuer == identity.issuer,
+            User.auth_subject == identity.subject,
+        )
+        .with_for_update(of=JobApplication)
+    )
+
+    if not include_archived:
+        statement = statement.where(
+            JobApplication.archived_at.is_(None)
+        )
+
+    application = session.scalar(statement)
+    if application is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return application
 
 
 @router.post(
@@ -170,25 +209,9 @@ def mark_application_applied(
     session: SessionDependency,
 ) -> ApplicationRead:
     with session.begin():
-        statement = (
-            select(JobApplication)
-            .join(User, JobApplication.user_id == User.id)
-            .where(
-                JobApplication.id == application_id,
-                User.auth_issuer == identity.issuer,
-                User.auth_subject == identity.subject,
-                JobApplication.archived_at.is_(None),
-            )
-            .with_for_update(of=JobApplication)
+        application = _owned_application_for_update(
+            session, identity, application_id
         )
-
-        application = session.scalar(statement)
-
-        if application is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Application not found",
-            )
 
         if application.status == "saved":
             application.status = "applied"
@@ -207,6 +230,74 @@ def mark_application_applied(
             )
 
         result = ApplicationRead.model_validate(application)
+
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.patch(
+    "/{application_id}",
+    response_model=ApplicationRead,
+    responses={
+        404: {"description": "Active application not found"},
+    },
+)
+def edit_application(
+    application_id: UUID,
+    payload: ApplicationUpdate,
+    response: Response,
+    identity: IdentityDependency,
+    session: SessionDependency,
+) -> ApplicationRead:
+    changes = payload.model_dump(exclude_unset=True)
+
+    with session.begin():
+        application = _owned_application_for_update(
+            session, identity, application_id
+        )
+
+        if "company" in changes:
+            application.company = changes["company"]
+        if "job_title" in changes:
+            application.job_title = changes["job_title"]
+
+        session.flush()
+        session.refresh(application)
+        result = ApplicationRead.model_validate(application)
+
+    response.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@router.post(
+    "/{application_id}/archive",
+    response_model=ApplicationArchivedRead,
+    responses={
+        404: {"description": "Application not found"},
+    },
+)
+def archive_application(
+    application_id: UUID,
+    payload: ApplicationArchive,
+    response: Response,
+    identity: IdentityDependency,
+    session: SessionDependency,
+) -> ApplicationArchivedRead:
+    with session.begin():
+        application = _owned_application_for_update(
+            session,
+            identity,
+            application_id,
+            include_archived=True,
+        )
+
+        # A repeated request returns the original archive timestamp.
+        if application.archived_at is None:
+            application.archived_at = datetime.now(UTC)
+            session.flush()
+            session.refresh(application)
+
+        result = ApplicationArchivedRead.model_validate(application)
 
     response.headers["Cache-Control"] = "no-store"
     return result

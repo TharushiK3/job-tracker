@@ -15,6 +15,16 @@ export type JobApplication = {
   appliedOn: string | null;
 };
 
+export type ApplicationEdits = {
+  company?: string;
+  jobTitle?: string;
+};
+
+export type ArchivedApplication = {
+  id: string;
+  archivedAt: string;
+};
+
 export type ApplicationOverview = {
   trackedRoles: number;
   submittedApplications: number;
@@ -56,6 +66,15 @@ function isNonnegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  );
+}
+
 function isStatus(value: unknown): value is ApplicationStatus {
   return (
     value === "saved" ||
@@ -77,7 +96,7 @@ export function isCalendarDate(value: unknown): value is string {
     return false;
   }
 
-  const date = new Date(value + "T00:00:00Z");
+  const date = new Date(`${value}T00:00:00Z`);
   return (
     Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
   );
@@ -86,10 +105,7 @@ export function isCalendarDate(value: unknown): value is string {
 function parseApplication(value: unknown): JobApplication {
   if (
     !isRecord(value) ||
-    typeof value.id !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      value.id,
-    ) ||
+    !isUuid(value.id) ||
     typeof value.company !== "string" ||
     !value.company.trim() ||
     typeof value.job_title !== "string" ||
@@ -114,6 +130,22 @@ function parseApplication(value: unknown): JobApplication {
     status: value.status,
     appliedOn: value.applied_on,
   };
+}
+
+function parseArchivedApplication(value: unknown): ArchivedApplication {
+  if (
+    !isRecord(value) ||
+    !isUuid(value.id) ||
+    typeof value.archived_at !== "string" ||
+    !isCalendarDate(value.archived_at.slice(0, 10)) ||
+    !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])$/.test(
+      value.archived_at,
+    ) ||
+    !Number.isFinite(Date.parse(value.archived_at))
+  ) {
+    throw new Error("Invalid archive response.");
+  }
+  return { id: value.id, archivedAt: value.archived_at };
 }
 
 function parsePage(value: unknown): ApplicationPage {
@@ -170,7 +202,7 @@ function serverMessage(payload: unknown): string | undefined {
   const label = typeof field === "string" ? labels[field] : undefined;
   const message = detail.msg.replace(/^Value error, /, "");
 
-  return label ? label + ": " + message : message;
+  return label ? `${label}: ${message}` : message;
 }
 
 function apiBaseUrl(): string {
@@ -200,7 +232,7 @@ function apiBaseUrl(): string {
 }
 
 type RequestOptions = {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PATCH";
   body?: unknown;
   signal?: AbortSignal | undefined;
 };
@@ -215,15 +247,15 @@ async function request<T>(
     throw new ApiError("Your session has ended. Please sign in again.", 401);
   }
 
-  const url = apiBaseUrl() + path;
+  const url = `${apiBaseUrl()}${path}`;
   const method = options.method ?? "GET";
-  const isWrite = method === "POST";
+  const isWrite = method !== "GET";
   const timeout = AbortSignal.timeout(20_000);
   const signal = options.signal
     ? AbortSignal.any([options.signal, timeout])
     : timeout;
   const headers: Record<string, string> = {
-    Authorization: "Bearer " + token,
+    Authorization: `Bearer ${token}`,
   };
 
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
@@ -266,11 +298,18 @@ async function request<T>(
       );
     }
 
+    if (response.status === 404 && isWrite) {
+      throw new ApiError(
+        "This role is no longer available. Refresh the list.",
+        404,
+      );
+    }
+
     const message =
       serverMessage(payload) ?? "The request could not be completed.";
     throw new ApiError(
       response.status >= 500 && isWrite
-        ? message + " Refresh the list before trying again."
+        ? `${message} Refresh the list before trying again.`
         : message,
       response.status,
       isWrite && response.status >= 500,
@@ -297,7 +336,7 @@ export function listApplications(
   signal?: AbortSignal,
 ): Promise<ApplicationPage> {
   return request(
-    "/api/applications?limit=" + limit + "&offset=" + offset,
+    `/api/applications?limit=${limit}&offset=${offset}`,
     token,
     parsePage,
     { signal },
@@ -321,7 +360,7 @@ export function recordApplicationDate(
   appliedOn: string,
 ): Promise<JobApplication> {
   return request(
-    "/api/applications/" + encodeURIComponent(applicationId) + "/mark-applied",
+    `/api/applications/${encodeURIComponent(applicationId)}/mark-applied`,
     token,
     parseApplication,
     {
@@ -331,5 +370,48 @@ export function recordApplicationDate(
         time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
     },
+  );
+}
+
+export async function updateApplication(
+  token: string,
+  applicationId: string,
+  changes: ApplicationEdits,
+): Promise<JobApplication> {
+  const body: { company?: string; job_title?: string } = {};
+  if (changes.company !== undefined) body.company = changes.company;
+  if (changes.jobTitle !== undefined) body.job_title = changes.jobTitle;
+
+  if (Object.keys(body).length === 0) {
+    throw new ApiError("Change a company or job title before saving.");
+  }
+
+  return request(
+    `/api/applications/${encodeURIComponent(applicationId)}`,
+    token,
+    (value) => {
+      const result = parseApplication(value);
+      if (result.id !== applicationId)
+        throw new Error("Unexpected application ID.");
+      return result;
+    },
+    { method: "PATCH", body },
+  );
+}
+
+export function archiveApplication(
+  token: string,
+  applicationId: string,
+): Promise<ArchivedApplication> {
+  return request(
+    `/api/applications/${encodeURIComponent(applicationId)}/archive`,
+    token,
+    (value) => {
+      const result = parseArchivedApplication(value);
+      if (result.id !== applicationId)
+        throw new Error("Unexpected application ID.");
+      return result;
+    },
+    { method: "POST", body: {} },
   );
 }

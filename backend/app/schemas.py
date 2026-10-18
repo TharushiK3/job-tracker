@@ -1,6 +1,6 @@
 import re
 from datetime import date, datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +11,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 
 ApplicationStatus = Literal[
@@ -24,22 +25,61 @@ ApplicationStatus = Literal[
 ]
 
 
+ApplicationLabel = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[^\x00-\x1f\x7f]+$",
+    ),
+]
+
+
 class ApplicationCreate(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
     )
 
-    company: str = Field(
-        min_length=1,
-        max_length=200,
-        pattern=r"^[^\x00-\x1f\x7f]+$",
+    company: ApplicationLabel
+    job_title: ApplicationLabel
+
+
+class ApplicationUpdate(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
     )
-    job_title: str = Field(
-        min_length=1,
-        max_length=200,
-        pattern=r"^[^\x00-\x1f\x7f]+$",
-    )
+
+    # None represents an omitted field internally. Explicit JSON null is invalid.
+    company: ApplicationLabel | SkipJsonSchema[None] = None
+    job_title: ApplicationLabel | SkipJsonSchema[None] = None
+
+    @field_validator("company", "job_title")
+    @classmethod
+    def reject_null(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Provide text or omit this field.")
+        return value
+
+    @model_validator(mode="after")
+    def require_edit(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("Provide a company or job title to update.")
+        return self
+
+
+class ApplicationArchive(BaseModel):
+    """The archive command accepts an empty JSON object."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ApplicationArchivedRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    archived_at: datetime
 
 
 class ApplicationMarkApplied(BaseModel):

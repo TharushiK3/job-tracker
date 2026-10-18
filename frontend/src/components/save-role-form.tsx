@@ -1,14 +1,36 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { errorMessage } from "@/lib/applications-api";
 
 type SaveRoleFormProps = {
-  onSave: (company: string, jobTitle: string) => void;
+  disabled?: boolean;
+  onSave: (company: string, jobTitle: string) => Promise<void>;
 };
 
-export default function SaveRoleForm({ onSave }: SaveRoleFormProps) {
+export default function SaveRoleForm({
+  disabled = false,
+  onSave,
+}: SaveRoleFormProps) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [invalidField, setInvalidField] = useState<
+    "company" | "jobTitle" | null
+  >(null);
+  const focusAfterSave = useRef(false);
+  const submittingRef = useRef(false);
+  const companyRef = useRef<HTMLInputElement>(null);
+  const busy = disabled || isSubmitting;
 
-  function handleSubmit(form: HTMLFormElement) {
+  useEffect(() => {
+    if (notice && !busy && focusAfterSave.current) {
+      companyRef.current?.focus();
+      focusAfterSave.current = false;
+    }
+  }, [notice, busy]);
+
+  async function handleSubmit(form: HTMLFormElement) {
+    if (submittingRef.current || disabled) return;
+
     const formData = new FormData(form);
     const company = String(formData.get("company") ?? "").trim();
     const jobTitle = String(formData.get("jobTitle") ?? "").trim();
@@ -16,20 +38,31 @@ export default function SaveRoleForm({ onSave }: SaveRoleFormProps) {
     if (!company || !jobTitle) {
       setError("Enter a company name and job title containing text.");
       setNotice("");
+      setInvalidField(!company ? "company" : "jobTitle");
 
       const field = form.elements.namedItem(!company ? "company" : "jobTitle");
-
-      if (field instanceof HTMLInputElement) {
-        field.focus();
-      }
-
+      if (field instanceof HTMLInputElement) field.focus();
       return;
     }
 
-    onSave(company, jobTitle);
-    form.reset();
+    submittingRef.current = true;
+    focusAfterSave.current = false;
+    setInvalidField(null);
+    setIsSubmitting(true);
     setError("");
-    setNotice(`Saved ${jobTitle} at ${company}.`);
+    setNotice("");
+
+    try {
+      await onSave(company, jobTitle);
+      form.reset();
+      focusAfterSave.current = true;
+      setNotice("Saved " + jobTitle + " at " + company + ".");
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+    }
   }
 
   return (
@@ -40,20 +73,21 @@ export default function SaveRoleForm({ onSave }: SaveRoleFormProps) {
       <h2 id="save-role-heading" className="text-lg font-semibold">
         Save a role
       </h2>
-
       <p className="mt-1 text-sm text-slate-600">
         Keep an opportunity you want to apply for.
       </p>
 
       <form
         className="mt-5 grid gap-4 sm:grid-cols-2"
+        aria-busy={isSubmitting}
         onSubmit={(event) => {
           event.preventDefault();
-          handleSubmit(event.currentTarget);
+          void handleSubmit(event.currentTarget);
         }}
         onInput={() => {
           setError("");
           setNotice("");
+          setInvalidField(null);
         }}
       >
         <div>
@@ -63,16 +97,18 @@ export default function SaveRoleForm({ onSave }: SaveRoleFormProps) {
           >
             Company
           </label>
-
           <input
+            ref={companyRef}
             id="company"
             name="company"
             type="text"
             autoComplete="off"
             required
-            maxLength={120}
+            maxLength={200}
+            disabled={busy}
+            aria-invalid={invalidField === "company" ? true : undefined}
             aria-describedby={error ? "save-role-error" : undefined}
-            className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:border-teal-700 focus:outline-2 focus:outline-offset-2 focus:outline-teal-700"
+            className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:border-teal-700 focus:outline-2 focus:outline-offset-2 focus:outline-teal-700 disabled:bg-slate-100"
           />
         </div>
 
@@ -83,16 +119,17 @@ export default function SaveRoleForm({ onSave }: SaveRoleFormProps) {
           >
             Job title
           </label>
-
           <input
             id="jobTitle"
             name="jobTitle"
             type="text"
             autoComplete="off"
             required
-            maxLength={160}
+            maxLength={200}
+            disabled={busy}
+            aria-invalid={invalidField === "jobTitle" ? true : undefined}
             aria-describedby={error ? "save-role-error" : undefined}
-            className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:border-teal-700 focus:outline-2 focus:outline-offset-2 focus:outline-teal-700"
+            className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2.5 focus:border-teal-700 focus:outline-2 focus:outline-offset-2 focus:outline-teal-700 disabled:bg-slate-100"
           />
         </div>
 
@@ -109,9 +146,10 @@ export default function SaveRoleForm({ onSave }: SaveRoleFormProps) {
         <div className="sm:col-span-2">
           <button
             type="submit"
-            className="rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700"
+            disabled={busy}
+            className="rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Save role
+            {isSubmitting ? "Saving..." : "Save role"}
           </button>
         </div>
       </form>

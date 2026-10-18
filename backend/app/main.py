@@ -1,11 +1,15 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.auth import AuthenticatedIdentity, require_identity
+from app.config import get_settings
 from app.database import engine
 
 
@@ -24,6 +28,14 @@ app = FastAPI(
     title="Job Application Tracker API",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().clerk_authorized_parties,
+    allow_credentials=False,
+    allow_methods=["GET"],
+    allow_headers=["Authorization"],
 )
 
 
@@ -58,3 +70,23 @@ def ready() -> dict[str, str]:
         "status": "ready",
         "database": "connected",
     }
+
+
+@app.get(
+    "/api/me",
+    tags=["Account"],
+    response_model=AuthenticatedIdentity,
+    responses={
+        401: {"description": "Authentication required"},
+        503: {"description": "Authentication service unavailable"},
+    },
+)
+def me(
+    response: Response,
+    identity: Annotated[
+        AuthenticatedIdentity,
+        Depends(require_identity),
+    ],
+) -> AuthenticatedIdentity:
+    response.headers["Cache-Control"] = "no-store"
+    return identity

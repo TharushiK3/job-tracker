@@ -1,9 +1,9 @@
 from pydantic_settings import SettingsConfigDict
 
-from app.config import BACKEND_DIR, Settings
+from app.config import BACKEND_DIR, DatabaseSettings
 
 
-class MigrationSettings(Settings):
+class MigrationSettings(DatabaseSettings):
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env.migrations",
         env_file_encoding="utf-8-sig",

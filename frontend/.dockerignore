@@ -1,0 +1,23 @@
+# Send only the files needed for the Linux build.
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!next.config.ts
+!tsconfig.json
+!next-env.d.ts
+!postcss.config.*
+!src/
+!src/**
+!public/
+!public/**
+!docker/
+!docker/build.mjs
+!docker/healthcheck.mjs
+
+# Keep local environment files and generated dependencies out at every depth.
+**/.env
+**/.env.*
+**/node_modules/
+**/.next/
+**/*.log

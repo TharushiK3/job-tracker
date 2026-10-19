@@ -1,0 +1,35 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runtime
+      secrets:
+        - frontend_env
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+
+    env_file:
+      - ./frontend/.env.local
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  frontend_env:
+    file: ./frontend/.env.local

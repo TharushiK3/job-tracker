@@ -1,0 +1,19 @@
+# Send only the inputs used by this Dockerfile.
+*
+!Dockerfile
+!requirements.txt
+!app/
+!app/**
+!tests/
+!tests/**
+!docker/
+!docker/healthcheck.py
+
+# Exclude generated files and local configuration within the allowed folders.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.venv/
+**/.env
+**/.env.*

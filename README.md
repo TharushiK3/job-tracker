@@ -238,6 +238,8 @@ Inspect the current process before stopping it. Use Ctrl+C in the terminal runni
 
 ## Tests and checks
 
+GitHub Actions runs the frontend checks and production build, and checks database migrations and backend tests in a separate job with a temporary PostgreSQL database. See [CI.md](CI.md) for the workflow configuration and how to read a failed run.
+
 ### Backend integration tests in Docker
 
 Build the `api-tests` image during first-time setup, or rebuild it after backend/test changes:
